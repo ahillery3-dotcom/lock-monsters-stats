@@ -1,196 +1,22 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#041E42">
-  <link rel="manifest" href="manifest.webmanifest">
-  <title>Lock Monsters Stats PWA</title>
-  <style>
-    :root{--navy:#041E42;--blue:#004C97;--red:#AC162C;--bg:#f3f6fa;--text:#0c1b2e;--muted:#64748b}
-    *{box-sizing:border-box}
-    body{margin:0;background:var(--bg);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;color:var(--text)}
-    header{background:linear-gradient(135deg,var(--navy),var(--blue));color:white;padding:18px 20px;position:sticky;top:0}
-    .eyebrow{font-size:11px;letter-spacing:.3em;font-weight:800}.title{font-size:24px;font-weight:900;margin:4px 0}.motto{font-size:12px}
-    main{max-width:640px;margin:auto;padding:14px 12px 34px}
-    .card{background:#fff;border-radius:20px;padding:16px;margin-bottom:12px;box-shadow:0 3px 14px rgba(4,30,66,.08)}
-    h2{font-size:19px;margin:0 0 12px}.status{display:flex;gap:8px;align-items:center;font-size:13px;font-weight:800}
-    .dot{width:10px;height:10px;border-radius:50%;background:#999}.online{background:#1c9b4b}.offline{background:var(--red)}
-    input{width:100%;font-size:17px;padding:14px;border:1px solid #d7e0ea;border-radius:14px;background:#fff;margin-bottom:10px}
-    button{border:0;border-radius:15px;background:var(--blue);color:white;min-height:54px;padding:13px;font-size:16px;font-weight:900}
-    .full{width:100%}.secondary{background:var(--navy)}.danger{background:var(--red)}.light{background:#e8f0fa;color:var(--navy)}
-    .actions{display:grid;grid-template-columns:1fr 1fr;gap:9px}.players{display:grid;grid-template-columns:1fr 1fr;gap:9px}.players button{background:#edf4fb;color:var(--navy);text-align:left}.players b{color:var(--blue)}
-    .score{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;text-align:center}.num{font-size:48px;font-weight:900}.team{font-size:13px;font-weight:900}.vs{color:#8E9090;font-weight:900}
-    .event{display:flex;justify-content:space-between;border-top:1px solid #edf1f5;padding:10px 0;gap:10px}.event:first-child{border-top:0}.sub{font-size:12px;color:var(--muted);margin-top:2px}
-    .pill{display:inline-block;padding:6px 9px;border-radius:999px;background:#e7f0fb;color:var(--blue);font-size:12px;font-weight:900}
-    @media(max-width:380px){.players{grid-template-columns:1fr}}
-  </style>
-</head>
-<body>
-<header>
-  <div class="eyebrow">LOCKPORT</div>
-  <div class="title">LOCK MONSTERS</div>
-  <div class="motto">One Team. One Standard. No Excuses.</div>
-</header>
-<main>
-  <div class="card">
-    <div class="status"><span id="statusDot" class="dot"></span><span id="statusText"></span></div>
-    <div class="sub" id="syncText"></div>
-  </div>
-  <div id="app"></div>
-</main>
-
-<script>
-const ROSTER = [
-  ['71','Jonathan Clark'],['11','Mark Corrao'],['8','Anson Czosek'],['88','Mason Dziura'],
-  ['97','Benjamin Ewart'],['14','Elliott Granville'],['23','Ryan Hillery'],['4','Brandyn Johnston'],
-  ['91','Alex Jordan'],['54','Noah Kennedy'],['29','Caden Mooradian'],['47','Blake Plewinski'],
-  ['41','Jack Sheehan'],['89','Callen Young'],['26','Maxwell Zhang']
-].map(([jersey,name])=>({jersey,name}));
-
-const DB_NAME='lockmonsters-pwa', DB_VERSION=1;
-let db, game=null, events=[], draft={};
-
-function uid(){return crypto.randomUUID ? crypto.randomUUID() : Date.now()+'-'+Math.random().toString(16).slice(2)}
-function esc(v){return String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]))}
-function lastName(n){return n.split(' ').pop()}
-function nowIso(){return new Date().toISOString()}
-
-function openDB(){
-  return new Promise((resolve,reject)=>{
-    const req=indexedDB.open(DB_NAME,DB_VERSION);
-    req.onupgradeneeded=()=>{
-      const d=req.result;
-      if(!d.objectStoreNames.contains('game')) d.createObjectStore('game',{keyPath:'id'});
-      if(!d.objectStoreNames.contains('events')) d.createObjectStore('events',{keyPath:'id'});
-      if(!d.objectStoreNames.contains('meta')) d.createObjectStore('meta',{keyPath:'key'});
-    };
-    req.onsuccess=()=>{db=req.result;resolve()};
-    req.onerror=()=>reject(req.error);
-  })
-}
-function tx(store,mode='readonly'){return db.transaction(store,mode).objectStore(store)}
-function idbGet(store,key){return new Promise((ok,bad)=>{const r=tx(store).get(key);r.onsuccess=()=>ok(r.result);r.onerror=()=>bad(r.error)})}
-function idbPut(store,val){return new Promise((ok,bad)=>{const r=tx(store,'readwrite').put(val);r.onsuccess=()=>ok(val);r.onerror=()=>bad(r.error)})}
-function idbAll(store){return new Promise((ok,bad)=>{const r=tx(store).getAll();r.onsuccess=()=>ok(r.result);r.onerror=()=>bad(r.error)})}
-
-async function loadLocal(){
-  game=await idbGet('game','current')||null;
-  events=(await idbAll('events')).filter(e=>!e.voided).sort((a,b)=>a.createdAt.localeCompare(b.createdAt));
-}
-async function saveGame(){ if(game) await idbPut('game',{...game,id:'current'}) }
-async function saveEvent(e){ await idbPut('events',e); events.push(e); events.sort((a,b)=>a.createdAt.localeCompare(b.createdAt)) }
-
-function score(){
-  let us=0,them=0;
-  events.filter(e=>game && e.gameId===game.gameId && !e.voided).forEach(e=>{
-    if(e.type==='GOAL') us++;
-    if(e.type==='OPP_GOAL') them++;
-  });
-  return {us,them};
-}
-
-function render(){
-  updateNet();
-  if(game?.status==='LIVE') renderLive(); else renderHome();
-}
-function renderHome(){
-  document.getElementById('app').innerHTML=`
-    <div class="card">
-      <h2>Start New Game</h2>
-      <input id="opp" placeholder="Opponent">
-      <input id="coach" placeholder="Coach name" value="${esc(localStorage.getItem('coach')||'')}">
-      <button class="full" onclick="startGame()">▶ Start Game</button>
-    </div>
-    <div class="card">
-      <span class="pill">Offline-first proof of concept</span>
-      <p class="sub">After this page has loaded once, you can turn on Airplane Mode and still start a test game and record goals locally.</p>
-    </div>`
-}
-async function startGame(){
-  const opp=document.getElementById('opp').value.trim();
-  const coach=document.getElementById('coach').value.trim();
-  if(!opp||!coach){alert('Enter opponent and coach.');return}
-  localStorage.setItem('coach',coach);
-  game={id:'current',gameId:uid(),status:'LIVE',opponent:opp,period:1,createdAt:nowIso()};
-  await saveGame(); render();
-}
-function renderLive(){
-  const s=score(), myEvents=events.filter(e=>e.gameId===game.gameId && !e.voided).slice().reverse();
-  document.getElementById('app').innerHTML=`
-    <div class="card">
-      <div class="score">
-        <div><div class="team">LOCK MONSTERS</div><div class="num">${s.us}</div></div>
-        <div class="vs">VS</div>
-        <div><div class="team">${esc(game.opponent).toUpperCase()}</div><div class="num">${s.them}</div></div>
-      </div>
-    </div>
-    <div class="card">
-      <div class="actions">
-        <button onclick="goalStart()">🥅 Goal</button>
-        <button class="danger" onclick="oppGoal()">❌ Opp Goal</button>
-      </div>
-    </div>
-    <div class="card"><h2>Recent Events</h2>
-      ${myEvents.length?myEvents.map(e=>`<div class="event"><div><strong>${e.type==='GOAL'?`GOAL — #${e.scorerJersey} ${esc(e.scorerName)}`:e.type}</strong><div class="sub">${new Date(e.createdAt).toLocaleTimeString()} · ${esc(e.coach)}</div></div></div>`).join(''):'<div class="sub">No events yet.</div>'}
-    </div>
-    <button class="full secondary" onclick="finishGame()">Finish Test Game</button>`
-}
-function goalStart(){draft={};pickPlayer('Who scored?',[],false,j=>{draft.scorerJersey=j;pickPlayer('Primary assist',[j],true,a=>{draft.assist1Jersey=a;pickPlayer('Secondary assist',[j,a].filter(Boolean),true,saveGoal)})})}
-function pickPlayer(title,excluded,allowNone,cb){
-  document.getElementById('app').innerHTML=`<div class="card"><h2>${title}</h2>
-  ${allowNone?`<button class="full light" style="margin-bottom:9px" onclick="window.pickCb('')">None</button>`:''}
-  <div class="players">${ROSTER.filter(p=>!excluded.includes(p.jersey)).map(p=>`<button onclick="window.pickCb('${p.jersey}')"><b>#${p.jersey}</b> ${esc(lastName(p.name))}</button>`).join('')}</div>
-  <button class="full secondary" style="margin-top:12px" onclick="renderLive()">Cancel</button></div>`;
-  window.pickCb=cb;
-}
-async function saveGoal(a2){
-  draft.assist2Jersey=a2;
-  const scorer=ROSTER.find(p=>p.jersey===draft.scorerJersey);
-  const a1=ROSTER.find(p=>p.jersey===draft.assist1Jersey);
-  const a2p=ROSTER.find(p=>p.jersey===draft.assist2Jersey);
-  const e={
-    id:uid(),gameId:game.gameId,type:'GOAL',createdAt:nowIso(),coach:localStorage.getItem('coach')||'Coach',
-    scorerJersey:scorer.jersey,scorerName:scorer.name,
-    assist1Jersey:a1?.jersey||'',assist1Name:a1?.name||'',
-    assist2Jersey:a2p?.jersey||'',assist2Name:a2p?.name||'',
-    synced:false,voided:false
-  };
-  await saveEvent(e); render();
-  trySync();
-}
-async function oppGoal(){
-  const e={id:uid(),gameId:game.gameId,type:'OPP_GOAL',createdAt:nowIso(),coach:localStorage.getItem('coach')||'Coach',synced:false,voided:false};
-  await saveEvent(e); render(); trySync();
-}
-async function finishGame(){
-  game.status='FINAL'; await saveGame(); render();
-}
-
-function updateNet(){
-  const online=navigator.onLine;
-  document.getElementById('statusDot').className='dot '+(online?'online':'offline');
-  document.getElementById('statusText').textContent=online?'Online':'Offline — local scoring still works';
-  const unsynced=events.filter(e=>!e.synced && !e.voided).length;
-  document.getElementById('syncText').textContent=unsynced?`${unsynced} event(s) waiting to sync`:'All local events synced or no events yet';
-}
-
-async function trySync(){
-  if(!navigator.onLine) return;
-  // POC placeholder: this proves the offline queue works.
-  // Next build will POST queued events to a real sync endpoint / Google Sheets bridge.
-  updateNet();
-}
-window.addEventListener('online',()=>{updateNet();trySync()});
-window.addEventListener('offline',updateNet);
-
-(async()=>{
-  await openDB(); await loadLocal();
-  if('serviceWorker' in navigator){
-    try{await navigator.serviceWorker.register('./sw.js')}catch(e){console.warn(e)}
-  }
-  render();
-})();
-</script>
-</body>
-</html>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="theme-color" content="#041E42"><link rel="manifest" href="manifest.webmanifest"><title>Lock Monsters Stats</title><style>
+:root{--navy:#041E42;--blue:#004C97;--red:#AC162C;--bg:#f3f6fa;--text:#0c1b2e;--muted:#64748b;--green:#18864b}*{box-sizing:border-box}body{margin:0;background:var(--bg);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;color:var(--text)}header{background:linear-gradient(135deg,var(--navy),var(--blue));color:#fff;padding:16px 18px;position:sticky;top:0}.eyebrow{font-size:10px;letter-spacing:.3em;font-weight:800}.title{font-size:23px;font-weight:900;margin:3px 0}.motto{font-size:11px}main{max-width:640px;margin:auto;padding:12px 10px 34px}.card{background:#fff;border-radius:18px;padding:14px;margin-bottom:10px;box-shadow:0 3px 14px rgba(4,30,66,.08)}h2{font-size:18px;margin:0 0 11px}.sub{font-size:12px;color:var(--muted);margin-top:3px}label{display:block;font-size:12px;font-weight:800;color:var(--muted);margin:6px 0}input{width:100%;font-size:16px;padding:13px;border:1px solid #d7e0ea;border-radius:13px;background:#fff;margin-bottom:9px}button{border:0;border-radius:14px;background:var(--blue);color:#fff;min-height:50px;padding:12px;font-size:15px;font-weight:900}.full{width:100%}.secondary{background:var(--navy)}.danger{background:var(--red)}.light{background:#e8f0fa;color:var(--navy)}.actions,.players{display:grid;grid-template-columns:1fr 1fr;gap:8px}.players button{background:#edf4fb;color:var(--navy);text-align:left}.players b{color:var(--blue)}.score{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;text-align:center}.num{font-size:46px;font-weight:900}.team{font-size:12px;font-weight:900}.vs{color:#8E9090;font-weight:900}.event{display:flex;justify-content:space-between;gap:8px;border-top:1px solid #edf1f5;padding:9px 0}.event:first-child{border-top:0}.statusRow{display:flex;justify-content:space-between;gap:8px;align-items:center}.status{display:flex;align-items:center;gap:7px;font-size:12px;font-weight:900}.dot{width:9px;height:9px;border-radius:50%}.online{background:var(--green)}.offline{background:var(--red)}.syncing{background:#d69e00}.pill{display:inline-block;padding:5px 8px;border-radius:999px;background:#e7f0fb;color:var(--blue);font-size:11px;font-weight:900}.banner{display:none;padding:10px 12px;border-radius:12px;margin-bottom:10px;font-size:12px;font-weight:800}.banner.show{display:block}.error{background:#fff1f2;color:#881337}.ok{background:#ecfdf5;color:#166534}@media(max-width:380px){.players{grid-template-columns:1fr}}
+</style></head><body><header><div class="eyebrow">LOCKPORT</div><div class="title">LOCK MONSTERS</div><div class="motto">One Team. One Standard. No Excuses.</div></header><main><div id="banner" class="banner"></div><div class="card"><div class="statusRow"><div class="status"><span id="statusDot" class="dot"></span><span id="statusText"></span></div><span class="pill" id="queueText">0 waiting</span></div><div class="sub" id="syncText"></div></div><div id="app"></div></main><script>
+const APP_VERSION='0.2.0';
+const ROSTER=[['71','Jonathan Clark'],['11','Mark Corrao'],['8','Anson Czosek'],['88','Mason Dziura'],['97','Benjamin Ewart'],['14','Elliott Granville'],['23','Ryan Hillery'],['4','Brandyn Johnston'],['91','Alex Jordan'],['54','Noah Kennedy'],['29','Caden Mooradian'],['47','Blake Plewinski'],['41','Jack Sheehan'],['89','Callen Young'],['26','Maxwell Zhang']].map(([jersey,name])=>({jersey,name}));
+const SYNC_ENDPOINT='https://script.google.com/macros/s/AKfycbweFj24alET9wn1tKkhADoy_JROQapukEAKJ2MxKCQm3oUt2RGj1z837xu_9M1SEFvP/exec';
+const DB_NAME='lockmonsters-pwa-v2',DB_VERSION=1;let db,game=null,events=[],draft={},syncing=false;
+function uid(){return crypto.randomUUID?crypto.randomUUID():Date.now()+'-'+Math.random().toString(16).slice(2)}function esc(v){return String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]))}function lastName(n){return String(n).split(' ').pop()}function nowIso(){return new Date().toISOString()}function today(){const d=new Date(),z=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())}`}function norm(s){return String(s||'').trim().toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')}function makeGameKey(date,opp){return `${date}|${norm(opp)}`}function endpointReady(){return SYNC_ENDPOINT.startsWith('https://script.google.com/macros/s/')&&SYNC_ENDPOINT.endsWith('/exec')}
+function openDB(){return new Promise((ok,bad)=>{const r=indexedDB.open(DB_NAME,DB_VERSION);r.onupgradeneeded=()=>{const d=r.result;if(!d.objectStoreNames.contains('game'))d.createObjectStore('game',{keyPath:'id'});if(!d.objectStoreNames.contains('events'))d.createObjectStore('events',{keyPath:'id'})};r.onsuccess=()=>{db=r.result;ok()};r.onerror=()=>bad(r.error)})}function store(n,m='readonly'){return db.transaction(n,m).objectStore(n)}function idbGet(n,k){return new Promise((ok,bad)=>{const r=store(n).get(k);r.onsuccess=()=>ok(r.result);r.onerror=()=>bad(r.error)})}function idbPut(n,v){return new Promise((ok,bad)=>{const r=store(n,'readwrite').put(v);r.onsuccess=()=>ok(v);r.onerror=()=>bad(r.error)})}function idbAll(n){return new Promise((ok,bad)=>{const r=store(n).getAll();r.onsuccess=()=>ok(r.result);r.onerror=()=>bad(r.error)})}
+async function loadLocal(){game=await idbGet('game','current')||null;events=(await idbAll('events')).sort((a,b)=>a.createdAt.localeCompare(b.createdAt))}async function saveGame(){if(game)await idbPut('game',{...game,id:'current'})}async function saveEvent(e){await idbPut('events',e);const i=events.findIndex(x=>x.id===e.id);if(i>=0)events[i]=e;else events.push(e);events.sort((a,b)=>a.createdAt.localeCompare(b.createdAt))}async function markSynced(id){const e=events.find(x=>x.id===id);if(!e)return;e.synced=true;e.syncedAt=nowIso();await saveEvent(e)}async function mergeRemote(remote){for(const r of remote||[]){if(!events.some(e=>e.id===r.id)){r.synced=true;await saveEvent(r)}}}
+function myEvents(){return game?events.filter(e=>e.gameKey===game.gameKey&&!e.voided):[]}function score(){let us=0,them=0;myEvents().forEach(e=>{if(e.type==='GOAL')us++;if(e.type==='OPP_GOAL')them++});return{us,them}}function unsynced(){return events.filter(e=>!e.synced&&!e.voided)}function render(){updateStatus();if(game?.status==='LIVE')renderLive();else renderHome()}
+function renderHome(){document.getElementById('app').innerHTML=`<div class="card"><h2>Start / Join Game</h2><label>Opponent</label><input id="opp" placeholder="Opponent"><label>Date</label><input id="date" type="date" value="${today()}"><label>Coach</label><input id="coach" placeholder="Coach name" value="${esc(localStorage.getItem('coach')||'')}"><button class="full" onclick="startGame()">▶ Start Game</button><div class="sub" style="margin-top:8px">Same opponent + date = same shared game when coaches sync.</div></div><div class="card"><span class="pill">PWA ${APP_VERSION}</span><div class="sub" style="margin-top:8px">${endpointReady()?'Sync endpoint configured.':'Sync endpoint NOT configured yet. Follow README.'}</div></div>`}
+async function startGame(){const opp=document.getElementById('opp').value.trim(),date=document.getElementById('date').value,coach=document.getElementById('coach').value.trim();if(!opp||!date||!coach){showBanner('Enter opponent, date, and coach.','error');return}localStorage.setItem('coach',coach);game={id:'current',gameId:uid(),gameKey:makeGameKey(date,opp),status:'LIVE',opponent:opp,date,createdAt:nowIso()};await saveGame();render();trySync()}
+function renderLive(){const s=score(),ev=myEvents().slice().reverse();document.getElementById('app').innerHTML=`<div class="card"><div class="score"><div><div class="team">LOCK MONSTERS</div><div class="num">${s.us}</div></div><div class="vs">VS</div><div><div class="team">${esc(game.opponent).toUpperCase()}</div><div class="num">${s.them}</div></div></div><div class="sub" style="text-align:center">Game key: ${esc(game.gameKey)}</div></div><div class="card"><div class="actions"><button onclick="goalStart()">🥅 Goal</button><button class="danger" onclick="oppGoal()">❌ Opp Goal</button><button class="secondary" onclick="pullNow()">↻ Sync Now</button><button class="light" onclick="finishGame()">Finish</button></div></div><div class="card"><h2>Recent Events</h2>${ev.length?ev.map(eventHtml).join(''):'<div class="sub">No events yet.</div>'}</div>`}
+function eventHtml(e){const title=e.type==='GOAL'?`GOAL — #${e.scorerJersey} ${esc(e.scorerName)}`:'OPP GOAL';const assists=[e.assist1Name,e.assist2Name].filter(Boolean);return `<div class="event"><div><strong>${title}</strong><div class="sub">${new Date(e.createdAt).toLocaleTimeString()} · ${esc(e.coach)}${assists.length?' · A: '+assists.map(esc).join(', '):''}</div></div><span class="pill">${e.synced?'synced':'local'}</span></div>`}
+function goalStart(){draft={};pick('Who scored?',[],false,j=>{draft.scorerJersey=j;pick('Primary assist',[j],true,a=>{draft.assist1Jersey=a;pick('Secondary assist',[j,a].filter(Boolean),true,saveGoal)})})}function pick(title,excluded,none,cb){document.getElementById('app').innerHTML=`<div class="card"><h2>${title}</h2>${none?`<button class="full light" style="margin-bottom:8px" onclick="window.pickCb('')">None</button>`:''}<div class="players">${ROSTER.filter(p=>!excluded.includes(p.jersey)).map(p=>`<button onclick="window.pickCb('${p.jersey}')"><b>#${p.jersey}</b> ${esc(lastName(p.name))}</button>`).join('')}</div><button class="full secondary" style="margin-top:10px" onclick="renderLive()">Cancel</button></div>`;window.pickCb=cb}
+async function saveGoal(a2){draft.assist2Jersey=a2;const scorer=ROSTER.find(p=>p.jersey===draft.scorerJersey),a1=ROSTER.find(p=>p.jersey===draft.assist1Jersey),a2p=ROSTER.find(p=>p.jersey===draft.assist2Jersey);const e={id:uid(),gameId:game.gameId,gameKey:game.gameKey,type:'GOAL',createdAt:nowIso(),coach:localStorage.getItem('coach')||'Coach',scorerJersey:scorer.jersey,scorerName:scorer.name,assist1Jersey:a1?.jersey||'',assist1Name:a1?.name||'',assist2Jersey:a2p?.jersey||'',assist2Name:a2p?.name||'',synced:false,voided:false};await saveEvent(e);render();trySync()}async function oppGoal(){const e={id:uid(),gameId:game.gameId,gameKey:game.gameKey,type:'OPP_GOAL',createdAt:nowIso(),coach:localStorage.getItem('coach')||'Coach',synced:false,voided:false};await saveEvent(e);render();trySync()}async function finishGame(){game.status='FINAL';await saveGame();render();trySync()}
+function updateStatus(){const online=navigator.onLine,dot=document.getElementById('statusDot'),txt=document.getElementById('statusText');dot.className='dot '+(syncing?'syncing':online?'online':'offline');txt.textContent=syncing?'Syncing…':online?'Online':'Offline — scoring still works';document.getElementById('queueText').textContent=`${unsynced().length} waiting`;document.getElementById('syncText').textContent=!endpointReady()?'Configure Apps Script endpoint to enable cloud sync.':unsynced().length?'Local events are safe and will retry automatically.':'All local events synced.'}function showBanner(msg,type='ok'){const b=document.getElementById('banner');b.textContent=msg;b.className=`banner show ${type}`;setTimeout(()=>b.className='banner',3000)}
+function jsonp(params,timeout=12000){return new Promise((resolve,reject)=>{if(!endpointReady()){reject(new Error('Sync endpoint is not configured.'));return}const cb='lmcb_'+Date.now()+'_'+Math.random().toString(16).slice(2),script=document.createElement('script'),timer=setTimeout(()=>cleanup(new Error('Sync timed out.')),timeout);function cleanup(err,data){clearTimeout(timer);delete window[cb];script.remove();err?reject(err):resolve(data)}window[cb]=data=>cleanup(null,data);params.callback=cb;script.onerror=()=>cleanup(new Error('Could not reach sync server.'));script.src=SYNC_ENDPOINT+'?'+new URLSearchParams(params).toString();document.body.appendChild(script)})}
+async function pushOne(e){const data=await jsonp({action:'push',payload:JSON.stringify(e)});if(!data||!data.ok)throw new Error(data?.error||'Push failed');await markSynced(e.id)}async function pullRemote(){if(!game||!endpointReady()||!navigator.onLine)return;const data=await jsonp({action:'pull',gameKey:game.gameKey});if(!data||!data.ok)throw new Error(data?.error||'Pull failed');await mergeRemote(data.events||[])}async function trySync(){if(syncing||!navigator.onLine||!endpointReady())return;syncing=true;updateStatus();try{for(const e of unsynced().slice())await pushOne(e);await pullRemote();showBanner('Sync complete.','ok')}catch(err){console.warn(err);showBanner('Could not sync yet. Local events are still safe.','error')}finally{syncing=false;render()}}async function pullNow(){await trySync()}
+window.addEventListener('online',()=>{updateStatus();trySync()});window.addEventListener('offline',updateStatus);(async()=>{await openDB();await loadLocal();if('serviceWorker'in navigator){try{await navigator.serviceWorker.register('./sw.js')}catch(e){console.warn(e)}}render();setTimeout(trySync,500)})();
+</script></body></html>
